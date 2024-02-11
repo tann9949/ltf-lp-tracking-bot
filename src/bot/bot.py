@@ -5,7 +5,6 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-import pandas as pd
 from telegram import Update
 from telegram.ext import (Application, CallbackContext, CommandHandler,
                           MessageHandler, filters)
