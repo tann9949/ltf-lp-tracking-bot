@@ -2,6 +2,7 @@ from web3 import Web3, HTTPProvider
 
 from .abi import erc20_abi
 from ..constant import Asset, Chain
+from ..providers import default_providers
 
 
 class LPNotFoundException(Exception):
@@ -10,20 +11,9 @@ class LPNotFoundException(Exception):
 
 class ERC20(object):
 
-    # from https://chainlist.org/
-    default_providers = {
-        Chain.OPTIMISM: "https://1rpc.io/op",
-        Chain.ARBITRUM_ONE: "https://1rpc.io/arb",
-        Chain.BNB_CHAIN: "https://bscrpc.com",
-        Chain.GNOSIS: "https://1rpc.io/gnosis",
-        Chain.POLYGON: "https://polygon.blockpi.network/v1/rpc/public",
-        Chain.LINEA: "https://linea.blockpi.network/v1/rpc/public",
-        Chain.METIS: "https://andromeda.metis.io/?owner=1088"
-    }
-
     @staticmethod
     def get_default_provider(chain: Chain) -> Web3:
-        return Web3(HTTPProvider(ERC20.default_providers[chain]))
+        return Web3(HTTPProvider(default_providers[chain]))
 
     def __init__(self, chain: Chain, address: str) -> None:
         self.provider = ERC20.get_default_provider(chain)

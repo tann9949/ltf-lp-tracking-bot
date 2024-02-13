@@ -13,6 +13,7 @@ from .utils import get_assets, prettify_chain
 from ..bot.utils import reply_markdown, reply_message
 from ..constant import Chain, Asset
 from ..erc20 import ERC20
+from ..special_nft.contract import SpecialNFTContract
 from ..price import get_asset_price
 
 CHAINS = [
@@ -125,6 +126,7 @@ class LTFLPBalanceBot(object):
         self.add_command_handler("start", LTFLPBalanceBot.start_callback)
         self.add_command_handler("help", LTFLPBalanceBot.start_callback)
         self.add_command_handler("lp", LTFLPBalanceBot.lp_balance_callback)
+        self.add_command_handler("special_nft", LTFLPBalanceBot.special_nft_callback)
     
     #### bot callback functions ####
 
@@ -140,7 +142,8 @@ class LTFLPBalanceBot(object):
             "fetch LP balance of a wallet across all chains.\n\n"
             "Here're the commands you can use on the bot:\n"
             "\- `/lp <wallet>`: Get the LP address across all chains\n"
-        ).replace(".", "\.")
+            "\- `/special_nft <wallet>`: Check whether the wallet does hold special NFT or not\n"
+        ).replace(".", "\.").strip()
         await reply_markdown(update, template)
         
     @staticmethod
@@ -157,10 +160,39 @@ class LTFLPBalanceBot(object):
             .replace("<", "").replace(">", "")\
             .replace("[", "").replace("]", "")
             
-        logging.info(f"")
+        logging.info(f"Arguments: {args}")
             
         lp_balances = get_lp_balances(wallet)
         msg = format_dict(wallet, lp_balances)
+        
+        await reply_markdown(update, msg)
+        
+    @staticmethod
+    async def special_nft_callback(update: Update, context: CallbackContext) -> None:
+        logging.info(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] \\special_nft triggered]")
+        
+        args = context.args
+        if len(args) != 1:
+            await reply_message(update,
+                                f"Please add your wallet as an argument!")
+            return
+            
+        wallet = args[0].lower().strip()\
+            .replace("<", "").replace(">", "")\
+            .replace("[", "").replace("]", "")
+            
+        logging.info(f"Arguments: {args}")
+        
+        nft_balance = SpecialNFTContract().balance_of(wallet)
+        msg = (
+            f"Wallet: `{wallet}`\n\n"
+            f"Current Special NFT Balance: `{nft_balance}`\n\n"
+        )
+        
+        if nft_balance > 0:
+            msg += f"> ✅ This wallet is holding special NFT"
+        else:
+            msg += f"> ❌ This wallet is NOT holding special NFT"
         
         await reply_markdown(update, msg)
 
