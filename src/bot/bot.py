@@ -4,6 +4,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from typing import Tuple
 
 from telegram import Update
 from telegram.ext import (Application, CallbackContext, CommandHandler,
@@ -27,7 +28,7 @@ CHAINS = [
 ]
 
 
-def get_lp_summary(chain, asset, wallet):
+def get_lp_summary(chain: Chain, asset: Asset, wallet: str) -> Tuple[Asset, dict]:
     lp_token = ERC20.get_asset(chain, asset)
     summary = lp_token.get_summary(wallet)
 
