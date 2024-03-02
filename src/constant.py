@@ -9,7 +9,7 @@ class Chain:
     POLYGON = "polygon"
     METIS = "metis"
     LINEA = "linea"
-
+    BASE = "base"
 
 class Asset:
     USDT = "usdt"
