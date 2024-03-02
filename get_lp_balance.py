@@ -74,7 +74,7 @@ def dict_to_df(balance_dict: Dict) -> pd.DataFrame:
 
 def upload_to_s3(file_path: str, bucket: str, key: Optional[str] = None) -> None:
     logging.info(f"Pushing {file_path} to S3")
-    key = file_path if key is None else key
+    key = os.path.basename(file_path) if key is None else key
     
     s3_client = boto3.client("s3")
     s3_client.upload_file(file_path, bucket, key)
