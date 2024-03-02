@@ -1,4 +1,8 @@
+boto3
+covalent-api-sdk
+moralis
 python-dotenv
 python-telegram-bot
 web3
 requests
+pandas
