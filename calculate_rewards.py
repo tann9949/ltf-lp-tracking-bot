@@ -6,7 +6,7 @@ import os
 import time
 from argparse import ArgumentParser, Namespace
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Union, Optional
+from typing import Dict, Optional
 
 import boto3
 import pandas as pd
@@ -24,12 +24,15 @@ logger.setLevel(logging.INFO)
 
 def run_parser() -> Namespace:
     parser = ArgumentParser()
-    
+
+    # asset params
     parser.add_argument("-c", "--chain", type=str, default=Chain.OPTIMISM, help="Chain to get asset")
     parser.add_argument("-a", "--assets", type=str, default="weth,usdc,usdt", help="Assets to get balance")
-    
+    # price params
     parser.add_argument("--eth-ma-window", type=int, default=7, help="Moving average window for calculating ETH price")
-    parser.add_argument("--usd-filter", type=float, default=10.0, help="Minimum USDT or USDC LP holdings")
+    parser.add_argument("--usd-filter", type=float, default=100.0, help="Minimum USDT or USDC LP holdings")
+    # reward params
+    parser.add_argument("--reward-amount", type=float, default=2500, help="Total amount of reward to be distributed")
     # save params
     parser.add_argument("--save-method", type=str, choices=["local", "s3"], default="local", help="Assets to get balance")
     parser.add_argument("--s3-bucket", type=str, help="Name of the S3 bucket to upload the file")
@@ -82,6 +85,24 @@ def get_special_nft_status(df: pd.DataFrame) -> pd.DataFrame:
     return new_df
 
 
+def calculate_reward(df: pd.DataFrame, reward_amt: int) -> pd.DataFrame:
+    
+    # weight score by usd_value
+    df["weighted_score"] = df["usd_value"] / sum(df["usd_value"])
+    
+    # calculate reward
+    df["reward_without_boost"] = df["weighted_score"] * reward_amt
+    
+    # make sure total reward don't exceed reward_amt
+    assert sum(df["reward_without_boost"]) <= reward_amt
+    
+    # calculate boosted reward if is_special
+    # boost by 10%
+    df["OP_rewards"] = df["reward_without_boost"] * 1.1 * df["is_special"] + df["reward_without_boost"] * ~df["is_special"]
+    
+    return df
+
+
 def upload_to_s3(file_path: str, bucket: str, key: Optional[str] = None) -> None:
     logging.info(f"Pushing {file_path} to S3")
     key = os.path.basename(file_path) if key is None else key
@@ -100,8 +121,12 @@ def main(args: Namespace) -> None:
     # unpack args
     chain = args.chain
     assets = args.assets.split(",")
+    
     eth_ma_window = args.eth_ma_window
     usd_filter = args.usd_filter
+    
+    reward_amt = args.reward_amount
+    
     save_method = args.save_method
     s3_bucket = args.s3_bucket if save_method == "s3" else None
     
@@ -116,6 +141,11 @@ def main(args: Namespace) -> None:
     
     # initialize API
     api = AnkrAPI()
+    
+    # calculate reward distribution
+    reward_per_asset = reward_amt / len(assets)
+    logging.info(f"There're {len(assets)} with a total reward of {reward_amt}")
+    logging.info(f"Each asset will be allocated reward for {reward_amt}")
     
     for _asset in assets:
         
@@ -141,6 +171,9 @@ def main(args: Namespace) -> None:
         
         # sort by usd value
         df = df.sort_values("usd_value", ascending=False)
+        
+        # calculate rewards
+        df = calculate_reward(df, reward_amt=reward_per_asset)
         
         # save to local
         output_path = f"outputs/{chain}_{_asset}_holder_balance.csv"
