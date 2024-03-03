@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from src.ankr.api import AnkrAPI
 from src.bot.utils import get_assets
 from src.constant import Asset, Chain
+from src.price import get_weth_price
 from src.special_nft.contract import SpecialNFTContract
 
 logger = logging.getLogger()
@@ -26,50 +27,59 @@ def run_parser() -> Namespace:
     
     parser.add_argument("-c", "--chain", type=str, default=Chain.OPTIMISM, help="Chain to get asset")
     parser.add_argument("-a", "--assets", type=str, default="weth,usdc,usdt", help="Assets to get balance")
+    
+    parser.add_argument("--eth-ma-window", type=int, default=7, help="Moving average window for calculating ETH price")
     parser.add_argument("--usd-filter", type=float, default=10.0, help="Minimum USDT or USDC LP holdings")
-    parser.add_argument("--weth-filter", type=float, default=0.1, help="Minimum WETH LP holdings")
     # save params
     parser.add_argument("--save-method", type=str, choices=["local", "s3"], default="local", help="Assets to get balance")
     parser.add_argument("--s3-bucket", type=str, help="Name of the S3 bucket to upload the file")
     
-    return parser.parse_args()
-
-
-def get_special_nft_status(holders: Dict[str, float]) -> Dict[str, Union[float, bool]]:
-    wallet_dict = dict()
-    
-    # multiprocess for fast API request
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_call = {
-            executor.submit(
-                lambda _address, _balance: (_balance, SpecialNFTContract().balance_of(_address) > 0.), 
-                address, balance
-            ): (address, balance) 
-            for address, balance in holders.items()
-        }
-
-        for future in as_completed(future_to_call):
-            _address, _ = future_to_call[future]
-            try:
-                result = future.result()
-                if result:
-                    _balance, is_special = result
-                    wallet_dict[_address] = (_balance, is_special)
-            except Exception as exc:
-                logging.error(exc)
-        
-    return wallet_dict
+    return parser.parse_args()        
 
 
 def dict_to_df(balance_dict: Dict) -> pd.DataFrame:
     df = pd.DataFrame([
-        (_wallet, _balance, _special)
-        for _wallet, (_balance, _special) in balance_dict.items()
-    ], columns=["wallet", "balance", "is_special_nft"])
+        (_wallet, _balance)
+        for _wallet, _balance in balance_dict.items()
+    ], columns=["wallet", "balance"])
     
     df = df.sort_values("balance", ascending=False)
     
     return df
+
+
+def resolve_holders_usd(df: pd.DataFrame, eth_ma_window: Optional[int] = None) -> pd.DataFrame:
+    # if eth_ma_window is not provided, use fix 1 USD value
+    asset_price = 1. if eth_ma_window is None else get_weth_price(ma_days=eth_ma_window)
+    
+    logging.info(f"Using asset price of {asset_price}")
+    
+    df["usd_value"] = df["balance"].map(lambda x: x * asset_price)
+    return df
+
+
+def get_special_nft_status(df: pd.DataFrame) -> pd.DataFrame:
+    
+    def check_nft_status(row):
+        try:
+            is_special = SpecialNFTContract().balance_of(row["wallet"]) > 0
+            return row["wallet"], row["balance"], row["usd_value"], is_special
+        except Exception as exc:
+            logging.error(exc)
+            return row["wallet"], row["balance"], row["usd_value"], False
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(check_nft_status, row): row for _, row in df.iterrows()}
+
+        results = []
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                results.append(result)
+
+    # Creating a new DataFrame from the results
+    new_df = pd.DataFrame(results, columns=["wallet", "balance", "usd_value", "is_special"])
+    return new_df
 
 
 def upload_to_s3(file_path: str, bucket: str, key: Optional[str] = None) -> None:
@@ -90,8 +100,8 @@ def main(args: Namespace) -> None:
     # unpack args
     chain = args.chain
     assets = args.assets.split(",")
+    eth_ma_window = args.eth_ma_window
     usd_filter = args.usd_filter
-    weth_filter = args.weth_filter
     save_method = args.save_method
     s3_bucket = args.s3_bucket if save_method == "s3" else None
     
@@ -108,27 +118,29 @@ def main(args: Namespace) -> None:
     api = AnkrAPI()
     
     for _asset in assets:
-        min_filter = 0.
-        
-        if _asset in [Asset.USDC, Asset.USDT, Asset.DAI]:
-            logging.info(f"Setting min filter of {_asset} LP to {usd_filter}")
-            min_filter = usd_filter
-        elif _asset in [Asset.WETH]:
-            logging.info(f"Setting min filter of {_asset} LP to {weth_filter}")
-            min_filter = weth_filter
-        else:
-            logging.warning(f"Unknown asset, not setting minimum filter")
         
         st = time.time()
         logging.info(f"Getting holders/balance for Connext {_asset} LP")
-        holders = api.get_lp_holders_and_balance(chain, _asset, min_filter=min_filter)
+        holders = api.get_lp_holders_and_balance(chain, _asset)
         logging.info(f"All holders retrieved. Took {time.time() - st:.2f} seconds")
         
+        # convert to dataframe
+        df = dict_to_df(holders)
+        
+        # resolve and filter USD price
+        df = resolve_holders_usd(
+            df=df, 
+            eth_ma_window=eth_ma_window if _asset == Asset.WETH else None
+        )
+        
+        # apply filter
+        df = df[df["usd_value"] >= usd_filter]
+        
         # get special NFT status
-        holders_with_special_status = get_special_nft_status(holders)
-
-        # write results
-        df = dict_to_df(holders_with_special_status)
+        df = get_special_nft_status(df)
+        
+        # sort by usd value
+        df = df.sort_values("usd_value", ascending=False)
         
         # save to local
         output_path = f"outputs/{chain}_{_asset}_holder_balance.csv"
