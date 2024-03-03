@@ -24,7 +24,7 @@ class AnkrAPI(object):
         else:
             raise ValueError(f"chain {chain} doesn't supported yet.")
     
-    def get_token_holders_and_balance(self, chain: Chain, address: str, min_filter: float = 0.) -> Dict[str, float]:
+    def get_token_holders_and_balance(self, chain: Chain, address: str) -> Dict[str, float]:
         # initialize
         holders = dict()
         
@@ -110,27 +110,15 @@ class AnkrAPI(object):
                 _balance = float(_holder["balance"])
                 _address = _holder["holderAddress"]
                 
-                if float(_balance) < min_filter:
-                    logging.debug(f"Removing {_address} (balance {_balance} < {min_filter})")
-                    continue
-                
                 assert _address not in holders, f"Address {_address} duplicated"
                 holders[_address] = _balance
             
         assert len(holders) == holder_counts, f"Total number of holders conflict. Expect {holder_counts} but got {len(holders)}"
         
-        # filtering
-        filtered_holders = {
-            _address: _balance
-            for _address, _balance in holders.items()
-            if _balance >= min_filter
-        }
-        logging.info(f"Holders filtered from {len(holders)} -> {len(filtered_holders)}")
-        
-        return filtered_holders
+        return holders
     
-    def get_lp_holders_and_balance(self, chain: Chain, asset: Asset, min_filter: float = 0.) -> List[Dict[str, str]]:
+    def get_lp_holders_and_balance(self, chain: Chain, asset: Asset) -> List[Dict[str, str]]:
         contract_address = ERC20.get_asset(chain, asset).address
-        holders = self.get_token_holders_and_balance(chain, contract_address, min_filter=min_filter)
+        holders = self.get_token_holders_and_balance(chain, contract_address)
         
         return holders
