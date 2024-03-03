@@ -103,12 +103,15 @@ def calculate_reward(df: pd.DataFrame, reward_amt: int) -> pd.DataFrame:
     return df
 
 
-def upload_to_s3(file_path: str, bucket: str, key: Optional[str] = None) -> None:
+def upload_to_s3(file_path: str, bucket: str, key: Optional[str] = None, public: bool = True) -> None:
     logging.info(f"Pushing {file_path} to S3")
     key = os.path.basename(file_path) if key is None else key
     
+    # set ACL to public-read
+    extra_args = {"ACL": "public-read"} if public else {}
+    
     s3_client = boto3.client("s3")
-    s3_client.upload_file(file_path, bucket, key)
+    s3_client.upload_file(file_path, bucket, key, ExtraArgs=extra_args)
     logging.info("File push to S3 successfully")
 
 
