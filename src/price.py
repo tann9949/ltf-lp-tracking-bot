@@ -14,12 +14,12 @@ def get_asset_price(asset: Asset) -> float:
         return get_metis_price()
     
     
-def get_weth_price() -> float:
-    return calculate_simple_moving_average("ethereum")
+def get_weth_price(ma_days: int = 30) -> float:
+    return calculate_simple_moving_average("ethereum", days=ma_days)
 
 
-def get_metis_price() -> float:
-    return calculate_simple_moving_average("metis-token")
+def get_metis_price(ma_days: int = 30) -> float:
+    return calculate_simple_moving_average("metis-token", days=ma_days)
 
 
 def fetch_coingecko_price(crypto_name: str, days: int = 30):
