@@ -1,12 +1,15 @@
 """Create csv files that records USDT, USDC, ETH holders
 on Optimism. The script took around 5-10 minutes to run.
 """
+import hashlib
+import json
 import logging
 import os
 import time
 from argparse import ArgumentParser, Namespace
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, Optional
 
 import boto3
 import pandas as pd
@@ -15,6 +18,7 @@ from dotenv import load_dotenv
 from src.ankr.api import AnkrAPI
 from src.bot.utils import get_assets
 from src.constant import Asset, Chain
+from src.erc20 import ERC20
 from src.price import get_weth_price
 from src.special_nft.contract import SpecialNFTContract
 
@@ -94,7 +98,8 @@ def calculate_reward(df: pd.DataFrame, reward_amt: int) -> pd.DataFrame:
     df["reward_without_boost"] = df["weighted_score"] * reward_amt
     
     # make sure total reward don't exceed reward_amt
-    assert sum(df["reward_without_boost"]) <= reward_amt
+    _chk_sum = sum(df["reward_without_boost"])
+    assert reward_amt - _chk_sum <= 1e-8, f"{_chk_sum} > {reward_amt}"
     
     # calculate boosted reward if is_special
     # boost by 10%
@@ -113,6 +118,92 @@ def upload_to_s3(file_path: str, bucket: str, key: Optional[str] = None, public:
     s3_client = boto3.client("s3")
     s3_client.upload_file(file_path, bucket, key, ExtraArgs=extra_args)
     logging.info("File push to S3 successfully")
+    
+    
+def create_transaction_batch(
+    address_amounts: Dict[str, float], 
+    safe_address: str, 
+    token_address: str, 
+    chain_id: int,
+    approve_tx: bool = True
+) -> Dict[str, Any]:
+    # get chain name
+    if chain_id == 10:
+        chain = Chain.OPTIMISM
+    else:
+        raise ValueError(f"Not supported for chain_id {chain_id} yet")
+    
+    decimal = ERC20(
+        Chain.OPTIMISM,
+        token_address
+    ).decimal
+    
+    # Prepare the batch structure
+    transaction_batch = {
+        "version": "1.0",
+        "chainId": str(chain_id),  # Assuming Ethereum mainnet
+        "createdAt": int(datetime.now().timestamp() * 1000),  # Current time in milliseconds
+        "meta": {
+            "name": "Transactions Batch",
+            "description": "",
+            "txBuilderVersion": "1.16.3",
+            "createdFromSafeAddress": safe_address,
+            "createdFromOwnerAddress": "",
+            "checksum": ""
+        },
+        "transactions": []
+    }
+    
+    # Add approve transaction if needed
+    if approve_tx:
+        total_amount = sum(address_amounts.values())
+        approve_amount = int(total_amount * (10 ** decimal))  # Total amount in token's smallest unit
+        approve_transaction = {
+            "to": token_address,
+            "value": "0",
+            "data": None,
+            "contractMethod": {
+                "inputs": [
+                    {"internalType": "address", "name": "spender", "type": "address"},
+                    {"internalType": "uint256", "name": "amount", "type": "uint256"}
+                ],
+                "name": "approve",
+                "payable": False
+            },
+            "contractInputsValues": {
+                "spender": safe_address,
+                "amount": str(approve_amount)
+            }
+        }
+        transaction_batch["transactions"].append(approve_transaction)
+
+    # Add transfer transactions
+    for address, amount in address_amounts.items():
+        wei_amount = int(amount * (10 ** decimal))  # Convert token amount to smallest unit
+        transaction = {
+            "to": token_address,
+            "value": "0",
+            "data": None,
+            "contractMethod": {
+                "inputs": [
+                    {"internalType": "address", "name": "to", "type": "address"},
+                    {"internalType": "uint256", "name": "amount", "type": "uint256"}
+                ],
+                "name": "transfer",
+                "payable": False
+            },
+            "contractInputsValues": {
+                "to": address,
+                "amount": str(wei_amount)
+            }
+        }
+        transaction_batch["transactions"].append(transaction)
+
+    # Generate checksum
+    checksum = hashlib.sha256(json.dumps(transaction_batch, sort_keys=True).encode()).hexdigest()
+    transaction_batch["meta"]["checksum"] = checksum
+
+    return transaction_batch
 
 
 def main(args: Namespace) -> None:
@@ -150,6 +241,7 @@ def main(args: Namespace) -> None:
     logging.info(f"There're {len(assets)} with a total reward of {reward_amt}")
     logging.info(f"Each asset will be allocated reward for {reward_amt}")
     
+    final_rewards = dict()
     for _asset in assets:
         
         st = time.time()
@@ -178,6 +270,9 @@ def main(args: Namespace) -> None:
         # calculate rewards
         df = calculate_reward(df, reward_amt=reward_per_asset)
         
+        # assign date for further sanity check
+        df["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
         # save to local
         output_path = f"outputs/{chain}_{_asset}_holder_balance.csv"
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -188,6 +283,33 @@ def main(args: Namespace) -> None:
             upload_to_s3(output_path, s3_bucket)
         
         logging.info(f"Holder statistics for was saved to {output_path}")
+        
+        # update final rewards from df
+        for _, _row in df[["wallet", "OP_rewards"]].iterrows():
+            if _row.wallet not in final_rewards:
+                final_rewards[_row.wallet] = _row.OP_rewards
+            else:
+                final_rewards[_row.wallet] += _row.OP_rewards
+        final_rewards = {
+            k: v for k, v 
+            in sorted(final_rewards.items(), key=lambda x: x[1], reverse=True)}
+                
+    # save final reward
+    with open("outputs/op_reward.json", "w") as fp:
+        json.dump(final_rewards, fp, indent=4)
+        
+    # save batch txs
+    with open("outputs/transactions.json", "w") as fp:
+        json.dump(
+            create_transaction_batch(
+                address_amounts=final_rewards,
+                safe_address="0x569a4edB518fc83eF4f82791c02B1bBECB5A69b3",  # ltf multisig
+                token_address="0x4200000000000000000000000000000000000042",  # token id
+                chain_id=10  # Optimism
+            ),
+            fp,
+            indent=4
+        )
         
     logging.info(f"Process finished in {time.time() - global_st:.2f} seconds")
 
