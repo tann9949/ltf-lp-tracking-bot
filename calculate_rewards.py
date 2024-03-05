@@ -311,6 +311,11 @@ def main(args: Namespace) -> None:
             indent=4
         )
         
+    # push to s3 if needed
+    if save_method == "s3":
+        upload_to_s3("outputs/op_reward.json", s3_bucket)
+        upload_to_s3("outputs/transactions.json", s3_bucket)
+        
     logging.info(f"Process finished in {time.time() - global_st:.2f} seconds")
 
 
